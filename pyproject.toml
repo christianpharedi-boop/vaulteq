@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vaulteq"
+version = "0.2.1"
+description = "Zero-infra, embeddable, agent-native double-entry ledger and payments computation. pip install it — don't sign up for it."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Basie Pharedi" }]
+keywords = ["ledger", "accounting", "double-entry", "payments", "ai-agents", "mcp", "fintech"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial :: Accounting",
+]
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["fastmcp>=0.1.0"]
+api = ["fastapi>=0.110.0", "uvicorn[standard]>=0.27.0"]
+dev = ["pytest", "httpx"]
+
+[project.urls]
+Homepage = "https://github.com/christianpharedi-boop/vaulteq"
+Repository = "https://github.com/christianpharedi-boop/vaulteq"
+
+[project.scripts]
+vaulteq-mcp = "vaulteq.ledger.mcp_server:main"
+
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vaulteq*"]
+
+[tool.setuptools.package-data]
+"vaulteq.ledger" = ["schema.sql"]
