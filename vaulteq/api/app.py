@@ -25,7 +25,7 @@ app = FastAPI(
         "Deterministic, agent-native financial infrastructure. "
         "Ledger · Payments · Identity. LLMs orchestrate. VaultEq computes."
     ),
-    version="0.2.9",
+    version="0.3.0",
 )
 
 # Security: API Key Authentication
@@ -67,14 +67,14 @@ app.include_router(identity_router, dependencies=[Depends(get_api_key)])
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "vaulteq", "version": "0.2.9"}
+    return {"status": "ok", "service": "vaulteq", "version": "0.3.0"}
 
 
 @app.get("/")
 def root():
     return {
         "name": "VaultEq",
-        "version": "0.2.9",
+        "version": "0.3.0",
         "modules": ["ledger", "payments", "identity"],
         "docs": "/docs",
     }

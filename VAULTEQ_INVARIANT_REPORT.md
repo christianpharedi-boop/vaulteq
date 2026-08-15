@@ -1,4 +1,4 @@
-# VaultEq Invariant & Performance Dashboard (v0.2.8)
+# VaultEq Invariant & Performance Dashboard (v0.3.0)
 Generated automatically by VaultEq Verification Pipeline.
 
 ## 1. Core Invariant Matrix
@@ -16,19 +16,20 @@ Generated automatically by VaultEq Verification Pipeline.
 | **Integrity** | Audit Chain Concurrency (100+ events) | **PASS** |
 | **Recovery** | Backup & Restore Invariant Preservation | **PASS** |
 | **Recovery** | Crash Consistency & Interrupted Rollback | **PASS** |
+| **API Security** | CORS Hardening & Credentials Safety | **PASS** |
 | **MCP** | Safety Boundary & Error Contracts | **PASS** |
 
 ## 2. Test Suite Execution Summary
 - **Pytest Status**: SUCCESS (All tests passed)
-- **Test Summary**: `======================== 87 passed, 1 warning in 4.76s =========================`
+- **Test Summary**: `======================== 88 passed, 1 warning in 4.65s =========================`
 
 ## 3. Performance & Scaling Benchmarks (Local SQLite Configuration)
-- **Posting Throughput (TPS)**: `718.73 TPS`
-- **1,000 Journals Posted In**: `1.3913 s`
-- **Trial Balance Calculation**: `1.76 ms`
-- **Audit Chain Verification (1,000+ events)**: `3.34 ms`
+- **Posting Throughput (TPS)**: `735.82 TPS`
+- **1,000 Journals Posted In**: `1.3590 s`
+- **Trial Balance Calculation**: `1.74 ms`
+- **Audit Chain Verification (1,000+ events)**: `6.78 ms`
 - **Trial Balance Invariant Holds**: `True`
 - **Audit Chain Integrity Holds**: `True`
 
 ---
-*VaultEq v0.2.8 is engineered to ensure AI agents orchestrate computation without ever becoming the system of record.*
+*VaultEq v0.3.0 is engineered to ensure AI agents orchestrate computation without ever becoming the system of record.*

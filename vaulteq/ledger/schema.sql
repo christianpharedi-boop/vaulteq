@@ -72,6 +72,106 @@ CREATE TABLE IF NOT EXISTS fx_rate (
     PRIMARY KEY (organization_id, from_currency, to_currency, effective_at)
 );
 
+-- Identity & Compliance Durability Tables
+CREATE TABLE IF NOT EXISTS identity_customer (
+    id              TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL REFERENCES organization(id),
+    legal_name      TEXT NOT NULL,
+    customer_type   TEXT NOT NULL,
+    email           TEXT,
+    phone           TEXT,
+    address         TEXT,
+    country         TEXT,
+    metadata        TEXT,
+    created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS identity_kyc_case (
+    id              TEXT PRIMARY KEY,
+    customer_id     TEXT NOT NULL REFERENCES identity_customer(id),
+    status          TEXT NOT NULL,
+    level           TEXT NOT NULL,
+    reason          TEXT DEFAULT '',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS identity_document (
+    id              TEXT PRIMARY KEY,
+    case_id         TEXT NOT NULL REFERENCES identity_kyc_case(id),
+    document_type   TEXT NOT NULL,
+    document_number TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    uploaded_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS identity_screening (
+    id              TEXT PRIMARY KEY,
+    customer_id     TEXT NOT NULL REFERENCES identity_customer(id),
+    provider        TEXT NOT NULL,
+    hit             INTEGER NOT NULL,
+    matches         TEXT NOT NULL,
+    screened_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS identity_risk_assessment (
+    id              TEXT PRIMARY KEY,
+    customer_id     TEXT NOT NULL REFERENCES identity_customer(id),
+    risk_level      TEXT NOT NULL,
+    factors         TEXT NOT NULL,
+    assessed_at     TEXT NOT NULL
+);
+
+-- Payments Durability Tables
+CREATE TABLE IF NOT EXISTS payment_intent (
+    id                  TEXT PRIMARY KEY,
+    organization_id     TEXT NOT NULL REFERENCES organization(id),
+    customer_id         TEXT,
+    amount_minor        INTEGER NOT NULL,
+    currency            TEXT NOT NULL,
+    description         TEXT,
+    status              TEXT NOT NULL,
+    idempotency_key     TEXT NOT NULL,
+    payment_method_id   TEXT,
+    metadata            TEXT,
+    created_at          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS payment_method (
+    id                  TEXT PRIMARY KEY,
+    organization_id     TEXT NOT NULL REFERENCES organization(id),
+    customer_id         TEXT NOT NULL,
+    method_type         TEXT NOT NULL,
+    rail                TEXT NOT NULL,
+    token               TEXT NOT NULL,
+    is_default          INTEGER NOT NULL,
+    created_at          TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS payment_attempt (
+    id                  TEXT PRIMARY KEY,
+    payment_intent_id   TEXT NOT NULL REFERENCES payment_intent(id),
+    payment_method_id   TEXT NOT NULL REFERENCES payment_method(id),
+    rail                TEXT NOT NULL,
+    amount_minor        INTEGER NOT NULL,
+    currency            TEXT NOT NULL,
+    fee_breakdown_json  TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    captured_at         TEXT,
+    ledger_entry_id     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS payment_refund (
+    id                  TEXT PRIMARY KEY,
+    payment_attempt_id  TEXT NOT NULL REFERENCES payment_attempt(id),
+    amount_minor        INTEGER NOT NULL,
+    currency            TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    fee_policy          TEXT NOT NULL,
+    ledger_entry_id     TEXT,
+    refunded_at         TEXT NOT NULL
+);
+
 -- Helpful indexes
 CREATE INDEX IF NOT EXISTS idx_journal_entry_org_posted
     ON journal_entry (organization_id, posted_at);

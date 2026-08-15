@@ -1,7 +1,7 @@
 """
 VaultEq — Identity & Compliance Engine
 ======================================
-Deterministic KYC/AML/risk computation for agents.
+Deterministic KYC/AML/risk computation for agents with full SQLite durability.
 
 Optional ledger binding: compliance decisions can be recorded on the
 shared audit chain; PROHIBITED customers are blocked from transacting.
@@ -27,6 +27,7 @@ from .models import (
     RiskAssessment,
     RiskLevel,
     ScreeningType,
+    DocumentStatus,
 )
 
 
@@ -98,7 +99,7 @@ class MockScreeningProvider:
         if "POLITICIAN" in upper:
             matches.append(Match(
                 confidence=0.95,
-                source="MOCK_PEP_DATABASE",
+                source="MOCK_PEP_LIST",
                 match_type="PEP",
                 details=f"Identified as a Politically Exposed Person: {name}"
             ))
@@ -147,7 +148,7 @@ class TransactionBlockedError(IdentityError):
 
 class IdentityEngine:
     """
-    Deterministic identity and compliance engine.
+    Deterministic identity and compliance engine backed by SQLite durability.
 
     Risk matrix:
       - AML HIT            → PROHIBITED
@@ -164,13 +165,8 @@ class IdentityEngine:
     ):
         self.organization_id = organization_id
         self.screening_provider = screening_provider or MockScreeningProvider()
-        self.ledger = ledger  # optional LedgerEngine for shared org context
-
-        self._customers: Dict[str, Customer] = {}
-        self._kyc_cases: Dict[str, KYCCase] = {}
-        self._documents: Dict[str, KYCDocument] = {}
-        self._aml_screenings: List[AMLScreening] = []
-        self._risk_assessments: Dict[str, RiskAssessment] = {}
+        from vaulteq.ledger import LedgerEngine
+        self.ledger = ledger or LedgerEngine(":memory:")
 
     # ── Customers ───────────────────────────────────────────────────────────
 
@@ -194,16 +190,70 @@ class IdentityEngine:
             country=country,
             metadata=metadata or {},
         )
-        self._customers[customer.id] = customer
+        with self.ledger._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO identity_customer 
+                (id, organization_id, legal_name, customer_type, email, phone, address, country, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    customer.id,
+                    customer.organization_id,
+                    customer.legal_name,
+                    customer.customer_type.value,
+                    customer.email,
+                    customer.phone,
+                    customer.address,
+                    customer.country,
+                    json.dumps(customer.metadata),
+                    customer.created_at.isoformat(),
+                ),
+            )
         return customer
 
     def get_customer(self, customer_id: str) -> Customer:
-        if customer_id not in self._customers:
-            raise CustomerNotFoundError(customer_id)
-        return self._customers[customer_id]
+        with self.ledger._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM identity_customer WHERE id = ? AND organization_id = ?",
+                (customer_id, self.organization_id),
+            ).fetchone()
+            if not row:
+                raise CustomerNotFoundError(customer_id)
+            return Customer(
+                organization_id=row["organization_id"],
+                legal_name=row["legal_name"],
+                customer_type=CustomerType(row["customer_type"]),
+                id=row["id"],
+                email=row["email"] or "",
+                phone=row["phone"] or "",
+                address=row["address"] or "",
+                country=row["country"] or "",
+                metadata=json.loads(row["metadata"] or "{}"),
+                created_at=datetime.fromisoformat(row["created_at"]),
+            )
 
     def list_customers(self) -> List[Customer]:
-        return list(self._customers.values())
+        with self.ledger._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM identity_customer WHERE organization_id = ?",
+                (self.organization_id,),
+            ).fetchall()
+            return [
+                Customer(
+                    organization_id=r["organization_id"],
+                    legal_name=r["legal_name"],
+                    customer_type=CustomerType(r["customer_type"]),
+                    id=r["id"],
+                    email=r["email"] or "",
+                    phone=r["phone"] or "",
+                    address=r["address"] or "",
+                    country=r["country"] or "",
+                    metadata=json.loads(r["metadata"] or "{}"),
+                    created_at=datetime.fromisoformat(r["created_at"]),
+                )
+                for r in rows
+            ]
 
     # ── KYC ─────────────────────────────────────────────────────────────────
 
@@ -212,7 +262,22 @@ class IdentityEngine:
     ) -> KYCCase:
         self.get_customer(customer_id)  # ensure exists
         case = KYCCase(customer_id=customer_id, status=KYCStatus.PENDING, level=level)
-        self._kyc_cases[case.id] = case
+        with self.ledger._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO identity_kyc_case (id, customer_id, status, level, reason, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    case.id,
+                    case.customer_id,
+                    case.status.value,
+                    case.level.value,
+                    case.reason,
+                    case.created_at.isoformat(),
+                    case.updated_at.isoformat(),
+                ),
+            )
         return case
 
     def upload_document(
@@ -222,32 +287,49 @@ class IdentityEngine:
         document_number: str,
         file_url: str = "",
     ) -> KYCDocument:
-        if kyc_case_id not in self._kyc_cases:
-            raise KYCCaseNotFoundError(kyc_case_id)
+        self.get_kyc_case(kyc_case_id)
         doc = KYCDocument(
             kyc_case_id=kyc_case_id,
             document_type=doc_type,
             document_number=document_number,
             file_url=file_url,
         )
-        self._documents[doc.id] = doc
+        with self.ledger._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO identity_document (id, case_id, document_type, document_number, status, uploaded_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    doc.id,
+                    doc.kyc_case_id,
+                    doc.document_type.value,
+                    doc.document_number,
+                    doc.status.value,
+                    doc.created_at.isoformat(),
+                ),
+            )
         return doc
 
     def verify_kyc(
         self, kyc_case_id: str, status: KYCStatus, reason: str = ""
     ) -> KYCCase:
-        if kyc_case_id not in self._kyc_cases:
-            raise KYCCaseNotFoundError(kyc_case_id)
+        case = self.get_kyc_case(kyc_case_id)
         if status not in (KYCStatus.APPROVED, KYCStatus.REJECTED, KYCStatus.REVIEW):
             raise IdentityError(
                 f"Invalid verification status: {status}", code="INVALID_KYC_STATUS"
             )
-        case = self._kyc_cases[kyc_case_id]
         old_status = case.status
         case.status = status
         case.reason = reason
         case.updated_at = datetime.now(timezone.utc)
         
+        with self.ledger._get_conn() as conn:
+            conn.execute(
+                "UPDATE identity_kyc_case SET status = ?, reason = ?, updated_at = ? WHERE id = ?",
+                (status.value, reason, case.updated_at.isoformat(), kyc_case_id),
+            )
+
         # Audit: Record KYC decision on Ledger
         if self.ledger:
             self.ledger.append_audit_event(
@@ -259,21 +341,45 @@ class IdentityEngine:
                     "customer_id": case.customer_id,
                     "old_status": old_status.value,
                     "new_status": status.value,
-                    "reason": reason
-                }
+                    "reason": reason,
+                },
             )
 
-        # Invalidate cached risk so next assess_risk recomputes
-        self._risk_assessments.pop(case.customer_id, None)
         return case
 
     def get_kyc_case(self, kyc_case_id: str) -> KYCCase:
-        if kyc_case_id not in self._kyc_cases:
-            raise KYCCaseNotFoundError(kyc_case_id)
-        return self._kyc_cases[kyc_case_id]
+        with self.ledger._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM identity_kyc_case WHERE id = ?", (kyc_case_id,)
+            ).fetchone()
+            if not row:
+                raise KYCCaseNotFoundError(kyc_case_id)
+            return KYCCase(
+                customer_id=row["customer_id"],
+                id=row["id"],
+                status=KYCStatus(row["status"]),
+                level=KYCLevel(row["level"]),
+                reason=row["reason"] or "",
+                created_at=datetime.fromisoformat(row["created_at"]),
+                updated_at=datetime.fromisoformat(row["updated_at"]),
+            )
 
     def list_documents(self, kyc_case_id: str) -> List[KYCDocument]:
-        return [d for d in self._documents.values() if d.kyc_case_id == kyc_case_id]
+        with self.ledger._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM identity_document WHERE case_id = ?", (kyc_case_id,)
+            ).fetchall()
+            return [
+                KYCDocument(
+                    kyc_case_id=r["case_id"],
+                    document_type=DocumentType(r["document_type"]),
+                    document_number=r["document_number"],
+                    id=r["id"],
+                    status=DocumentStatus(r["status"]),
+                    created_at=datetime.fromisoformat(r["uploaded_at"]),
+                )
+                for r in rows
+            ]
 
     # ── AML ─────────────────────────────────────────────────────────────────
 
@@ -306,12 +412,39 @@ class IdentityEngine:
             provider=result.provider,
             screened_at=result.screened_at,
         )
-        self._aml_screenings.append(screening)
-        self._risk_assessments.pop(customer_id, None)
+        with self.ledger._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO identity_screening (id, customer_id, provider, hit, matches, screened_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    screening.id,
+                    screening.customer_id,
+                    screening.provider,
+                    1 if result.hit else 0,
+                    screening.hit_details,
+                    screening.screened_at.isoformat(),
+                ),
+            )
         return screening
 
     def list_screenings(self, customer_id: str) -> List[AMLScreening]:
-        return [s for s in self._aml_screenings if s.customer_id == customer_id]
+        with self.ledger._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM identity_screening WHERE customer_id = ?", (customer_id,)
+            ).fetchall()
+            return [
+                AMLScreening(
+                    customer_id=r["customer_id"],
+                    status=AMLStatus.HIT if r["hit"] else AMLStatus.CLEAN,
+                    id=r["id"],
+                    hit_details=r["matches"],
+                    provider=r["provider"],
+                    screened_at=datetime.fromisoformat(r["screened_at"]),
+                )
+                for r in rows
+            ]
 
     # ── Risk ────────────────────────────────────────────────────────────────
 
@@ -322,21 +455,29 @@ class IdentityEngine:
         """
         self.get_customer(customer_id)
 
-        latest_aml = next(
-            (s for s in reversed(self._aml_screenings) if s.customer_id == customer_id),
-            None,
-        )
-        latest_kyc = next(
-            (c for c in reversed(list(self._kyc_cases.values())) if c.customer_id == customer_id),
-            None,
-        )
+        screenings = self.list_screenings(customer_id)
+        latest_aml = screenings[-1] if screenings else None
+
+        with self.ledger._get_conn() as conn:
+            kyc_rows = conn.execute(
+                "SELECT * FROM identity_kyc_case WHERE customer_id = ?", (customer_id,)
+            ).fetchall()
+            latest_kyc = None
+            if kyc_rows:
+                r = kyc_rows[-1]
+                latest_kyc = KYCCase(
+                    customer_id=r["customer_id"],
+                    id=r["id"],
+                    status=KYCStatus(r["status"]),
+                    level=KYCLevel(r["level"]),
+                )
 
         # Risk weights for comparison since str Enums don't support order
         weights = {
             RiskLevel.LOW: 0,
             RiskLevel.MEDIUM: 1,
             RiskLevel.HIGH: 2,
-            RiskLevel.PROHIBITED: 3
+            RiskLevel.PROHIBITED: 3,
         }
 
         risk_level = RiskLevel.LOW
@@ -383,7 +524,6 @@ class IdentityEngine:
                 risk_level = RiskLevel.MEDIUM
             factors.append("KYC: Manual review required")
         elif latest_kyc.status == KYCStatus.APPROVED:
-            # Downgrade risk if L3 approved and AML is clean
             if latest_kyc.level == KYCLevel.L3 and risk_level == RiskLevel.LOW:
                 factors.append("KYC: L3 Enhanced Due Diligence complete")
             else:
@@ -409,11 +549,10 @@ class IdentityEngine:
                 payload={
                     "customer_id": customer_id,
                     "risk_level": risk_level.value,
-                    "factors": factors
-                }
+                    "factors": factors,
+                },
             )
 
-        self._risk_assessments[customer_id] = assessment
         return assessment
 
     def can_transact(self, customer_id: str) -> bool:

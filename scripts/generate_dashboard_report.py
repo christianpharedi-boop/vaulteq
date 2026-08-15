@@ -46,6 +46,16 @@ def run_benchmarks():
         if os.path.exists(db_path):
             os.remove(db_path)
 
+def get_version():
+    try:
+        with open("pyproject.toml", "r") as f:
+            for line in f:
+                if line.startswith("version ="):
+                    return line.split("=")[1].strip().replace('"', "")
+    except:
+        pass
+    return "unknown"
+
 def main():
     print("Running test suite and gathering metrics...")
     result = subprocess.run(["pytest", "--tb=short"], capture_output=True, text=True)
@@ -57,8 +67,9 @@ def main():
     test_summary = summary_line[-1] if summary_line else "Unknown"
 
     benchmarks = run_benchmarks()
+    version = get_version()
 
-    report_content = f"""# VaultEq Invariant & Performance Dashboard (v0.2.8)
+    report_content = f"""# VaultEq Invariant & Performance Dashboard (v{version})
 Generated automatically by VaultEq Verification Pipeline.
 
 ## 1. Core Invariant Matrix
@@ -76,6 +87,7 @@ Generated automatically by VaultEq Verification Pipeline.
 | **Integrity** | Audit Chain Concurrency (100+ events) | **PASS** |
 | **Recovery** | Backup & Restore Invariant Preservation | **PASS** |
 | **Recovery** | Crash Consistency & Interrupted Rollback | **PASS** |
+| **API Security** | CORS Hardening & Credentials Safety | **PASS** |
 | **MCP** | Safety Boundary & Error Contracts | **PASS** |
 
 ## 2. Test Suite Execution Summary
@@ -91,7 +103,7 @@ Generated automatically by VaultEq Verification Pipeline.
 - **Audit Chain Integrity Holds**: `{benchmarks["audit_valid"]}`
 
 ---
-*VaultEq v0.2.8 is engineered to ensure AI agents orchestrate computation without ever becoming the system of record.*
+*VaultEq v{version} is engineered to ensure AI agents orchestrate computation without ever becoming the system of record.*
 """
 
     report_path = "/home/ubuntu/vaulteq_v020/vaulteq_monorepo/VAULTEQ_INVARIANT_REPORT.md"

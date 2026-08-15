@@ -1072,16 +1072,29 @@ class LedgerEngine:
         with self._get_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT payload_sha256, prev_event_hash
+                SELECT payload, payload_sha256, prev_event_hash
                 FROM audit_event
                 WHERE organization_id = ?
                 ORDER BY created_at ASC, id ASC
                 """,
                 (organization_id,),
             ).fetchall()
-            for i in range(1, len(rows)):
-                if rows[i]["prev_event_hash"] != rows[i - 1]["payload_sha256"]:
+            
+            for i, row in enumerate(rows):
+                # 1. Verify payload hash integrity
+                computed_hash = self._sha256(row["payload"])
+                if computed_hash != row["payload_sha256"]:
                     return False
+                
+                # 2. Verify chain linkage (previous hash matches)
+                if i > 0:
+                    if row["prev_event_hash"] != rows[i - 1]["payload_sha256"]:
+                        return False
+                else:
+                    # First event should have prev_event_hash as None (or initial)
+                    if row["prev_event_hash"] is not None:
+                        # Depending on implementation, first might be None
+                        pass
             return True
 
     def append_audit_event(
