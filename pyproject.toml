@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vaulteq"
-version = "0.2.1"
+version = "0.2.4"
 description = "Zero-infra, embeddable, agent-native double-entry ledger and payments computation. pip install it — don't sign up for it."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,7 +30,8 @@ Homepage = "https://github.com/christianpharedi-boop/vaulteq"
 Repository = "https://github.com/christianpharedi-boop/vaulteq"
 
 [project.scripts]
-vaulteq-mcp = "vaulteq.ledger.mcp_server:main"
+vaulteq-ledger-mcp = "vaulteq.ledger.mcp_server:main"
+vaulteq-identity-mcp = "vaulteq.identity.mcp_server:main"
 
 
 [tool.setuptools.packages.find]

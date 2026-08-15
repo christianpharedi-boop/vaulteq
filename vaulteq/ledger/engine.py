@@ -1084,6 +1084,27 @@ class LedgerEngine:
                     return False
             return True
 
+    def append_audit_event(
+        self,
+        organization_id: str,
+        entity_type: str,
+        entity_id: str,
+        action: str,
+        payload: dict,
+    ) -> str:
+        """Public method to append an arbitrary event to the audit chain."""
+        with self._get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                event_id, _ = self._append_audit(
+                    conn, organization_id, entity_type, entity_id, action, payload
+                )
+                conn.execute("COMMIT")
+                return event_id
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
     # ── Period Close & FX ─────────────────────────────────────────────────────
 
     def close_period(self, organization_id: str, period: str) -> None:

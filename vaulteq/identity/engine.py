@@ -58,7 +58,12 @@ class ScreeningProvider(Protocol):
 
 
 class MockScreeningProvider:
-    """Deterministic mock: names containing 'SANCTIONED' or 'BLOCKED' hit."""
+    """
+    Deterministic mock screening provider.
+    - Names containing 'SANCTIONED', 'BLOCKED', or 'OFAC' hit Sanctions (PROHIBITED).
+    - Names containing 'SUSPICIOUS' or 'SCAM' hit Adverse Media (HIGH).
+    - Names containing 'POLITICIAN' hit PEP (MEDIUM).
+    """
 
     PROVIDER_ID = "mock_screening_v1"
 
@@ -69,19 +74,37 @@ class MockScreeningProvider:
         nationality: Optional[str] = None,
     ) -> ScreeningResult:
         upper = name.upper()
-        hit = any(tok in upper for tok in ("SANCTIONED", "BLOCKED", "OFAC"))
         matches: List[Match] = []
-        if hit:
-            matches.append(
-                Match(
-                    confidence=0.97,
-                    source="MOCK_SANCTIONS_LIST",
-                    match_type="NAME",
-                    details=f"Name matched sanctions pattern: {name}",
-                )
-            )
+        
+        # 1. Sanctions Check
+        if any(tok in upper for tok in ("SANCTIONED", "BLOCKED", "OFAC")):
+            matches.append(Match(
+                confidence=0.99,
+                source="MOCK_SANCTIONS_LIST",
+                match_type="SANCTIONS",
+                details=f"Exact match found in OFAC SDN list for: {name}"
+            ))
+            
+        # 2. Adverse Media Check
+        if any(tok in upper for tok in ("SUSPICIOUS", "SCAM", "FRAUD")):
+            matches.append(Match(
+                confidence=0.85,
+                source="MOCK_NEWS_SEARCH",
+                match_type="ADVERSE_MEDIA",
+                details=f"Negative news reports linked to financial crime for: {name}"
+            ))
+            
+        # 3. PEP Check
+        if "POLITICIAN" in upper:
+            matches.append(Match(
+                confidence=0.95,
+                source="MOCK_PEP_DATABASE",
+                match_type="PEP",
+                details=f"Identified as a Politically Exposed Person: {name}"
+            ))
+
         return ScreeningResult(
-            hit=hit,
+            hit=len(matches) > 0,
             matches=matches,
             provider=self.PROVIDER_ID,
             screened_at=datetime.now(timezone.utc),
@@ -220,9 +243,26 @@ class IdentityEngine:
                 f"Invalid verification status: {status}", code="INVALID_KYC_STATUS"
             )
         case = self._kyc_cases[kyc_case_id]
+        old_status = case.status
         case.status = status
         case.reason = reason
         case.updated_at = datetime.now(timezone.utc)
+        
+        # Audit: Record KYC decision on Ledger
+        if self.ledger:
+            self.ledger.append_audit_event(
+                organization_id=self.organization_id,
+                entity_type="kyc_case",
+                entity_id=kyc_case_id,
+                action="VERIFY",
+                payload={
+                    "customer_id": case.customer_id,
+                    "old_status": old_status.value,
+                    "new_status": status.value,
+                    "reason": reason
+                }
+            )
+
         # Invalidate cached risk so next assess_risk recomputes
         self._risk_assessments.pop(case.customer_id, None)
         return case
@@ -276,6 +316,10 @@ class IdentityEngine:
     # ── Risk ────────────────────────────────────────────────────────────────
 
     def assess_risk(self, customer_id: str) -> RiskAssessment:
+        """
+        Deterministic Risk Matrix Aggregator.
+        Evaluates KYC level, status, and AML hit types to produce a final RiskLevel.
+        """
         self.get_customer(customer_id)
 
         latest_aml = next(
@@ -287,38 +331,88 @@ class IdentityEngine:
             None,
         )
 
+        # Risk weights for comparison since str Enums don't support order
+        weights = {
+            RiskLevel.LOW: 0,
+            RiskLevel.MEDIUM: 1,
+            RiskLevel.HIGH: 2,
+            RiskLevel.PROHIBITED: 3
+        }
+
         risk_level = RiskLevel.LOW
         factors: List[str] = []
 
+        # 1. Evaluate AML Screenings (Highest Precedence)
         if latest_aml and latest_aml.status == AMLStatus.HIT:
-            risk_level = RiskLevel.PROHIBITED
-            factors.append("AML/Sanctions Hit")
+            hit_types = set()
+            try:
+                details = json.loads(latest_aml.hit_details)
+                for match in details:
+                    hit_types.add(match.get("match_type"))
+            except:
+                hit_types.add("UNKNOWN")
 
-        if latest_kyc is None or latest_kyc.status == KYCStatus.PENDING:
-            if risk_level != RiskLevel.PROHIBITED:
-                risk_level = RiskLevel.MEDIUM
-            factors.append("KYC Pending")
-        elif latest_kyc.status == KYCStatus.REJECTED:
-            if risk_level != RiskLevel.PROHIBITED:
+            if "SANCTIONS" in hit_types:
+                risk_level = RiskLevel.PROHIBITED
+                factors.append("CRITICAL: Active Sanctions Hit")
+            elif "ADVERSE_MEDIA" in hit_types:
                 risk_level = RiskLevel.HIGH
-            factors.append("KYC Rejected")
-        elif latest_kyc.status == KYCStatus.REVIEW:
-            if risk_level not in (RiskLevel.PROHIBITED, RiskLevel.HIGH):
+                factors.append("HIGH: Adverse Media/Financial Crime Link")
+            elif "PEP" in hit_types:
                 risk_level = RiskLevel.MEDIUM
-            factors.append("KYC Manual Review")
+                factors.append("MEDIUM: Politically Exposed Person (PEP)")
+            else:
+                risk_level = RiskLevel.HIGH
+                factors.append("HIGH: AML Screening Hit")
+
+        # 2. Evaluate KYC Status (Additive Precedence)
+        if latest_kyc is None:
+            if weights[risk_level] < weights[RiskLevel.MEDIUM]:
+                risk_level = RiskLevel.MEDIUM
+            factors.append("KYC: No active case")
+        elif latest_kyc.status == KYCStatus.PENDING:
+            if weights[risk_level] < weights[RiskLevel.MEDIUM]:
+                risk_level = RiskLevel.MEDIUM
+            factors.append("KYC: Verification pending")
+        elif latest_kyc.status == KYCStatus.REJECTED:
+            if weights[risk_level] < weights[RiskLevel.HIGH]:
+                risk_level = RiskLevel.HIGH
+            factors.append("KYC: Case rejected")
+        elif latest_kyc.status == KYCStatus.REVIEW:
+            if weights[risk_level] < weights[RiskLevel.MEDIUM]:
+                risk_level = RiskLevel.MEDIUM
+            factors.append("KYC: Manual review required")
         elif latest_kyc.status == KYCStatus.APPROVED:
-            if risk_level == RiskLevel.LOW and not factors:
-                factors.append("KYC Approved")
-            if latest_aml and latest_aml.status == AMLStatus.CLEAN:
-                if "KYC Approved" not in factors:
-                    factors.append("KYC Approved")
-                factors.append("AML Clean")
+            # Downgrade risk if L3 approved and AML is clean
+            if latest_kyc.level == KYCLevel.L3 and risk_level == RiskLevel.LOW:
+                factors.append("KYC: L3 Enhanced Due Diligence complete")
+            else:
+                factors.append(f"KYC: {latest_kyc.level.value} Approved")
+
+        # 3. Final Aggregation
+        if not factors and risk_level == RiskLevel.LOW:
+            factors.append("Compliance: Standard monitoring")
 
         assessment = RiskAssessment(
             customer_id=customer_id,
             risk_level=risk_level,
             risk_factors=factors,
         )
+        
+        # Audit: Record Risk Assessment on Ledger
+        if self.ledger:
+            self.ledger.append_audit_event(
+                organization_id=self.organization_id,
+                entity_type="risk_assessment",
+                entity_id=assessment.id,
+                action="ASSESS",
+                payload={
+                    "customer_id": customer_id,
+                    "risk_level": risk_level.value,
+                    "factors": factors
+                }
+            )
+
         self._risk_assessments[customer_id] = assessment
         return assessment
 
