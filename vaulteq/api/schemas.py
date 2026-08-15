@@ -84,6 +84,7 @@ class RefundRequest(BaseModel):
     organization_id: str
     attempt_id: str
     amount: Optional[str] = None
+    fee_policy: str = "KEEP_ALL"
 
 
 class ReconcileRequest(BaseModel):

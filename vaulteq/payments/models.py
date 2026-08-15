@@ -53,6 +53,12 @@ class ReconciliationStatus(str, Enum):
     MATCHED = "MATCHED"
     DISPUTED = "DISPUTED"
 
+class FeeRecoveryPolicy(str, Enum):
+    """Determines how fees are handled during a refund."""
+    KEEP_ALL = "KEEP_ALL"            # Processor keeps all fees (standard for most)
+    REFUND_ALL = "REFUND_ALL"        # Processor refunds all fees (rare)
+    REFUND_PROPORTIONAL = "REFUND_PROPORTIONAL" # Fees refunded based on refund amount
+
 @dataclass
 class FeeBreakdown:
     interchange_fee: Decimal = Decimal("0.00")

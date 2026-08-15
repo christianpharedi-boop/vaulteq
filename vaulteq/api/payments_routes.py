@@ -85,8 +85,13 @@ def capture(organization_id: str, intent_id: str):
 @router.post("/refunds")
 def refund(body: RefundRequest):
     try:
+        from vaulteq.payments.models import FeeRecoveryPolicy
         eng = get_payments_for_org(body.organization_id)
-        return eng.refund(body.attempt_id, amount=body.amount)
+        return eng.refund(
+            body.attempt_id, 
+            amount=body.amount, 
+            fee_policy=FeeRecoveryPolicy(body.fee_policy.upper())
+        )
     except Exception as e:
         raise _pay_err(e)
 

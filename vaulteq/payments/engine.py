@@ -28,6 +28,7 @@ from vaulteq.ledger import (
 from .models import (
     AttemptStatus,
     FeeBreakdown,
+    FeeRecoveryPolicy,
     PaymentAttempt,
     PaymentIntent,
     PaymentIntentStatus,
@@ -268,7 +269,11 @@ class PaymentsEngine:
         self._attempts[attempt.id] = attempt
 
         amount_minor = _to_minor(intent.amount)
-        fee_minor = _to_minor(fees.total_fee)
+        
+        # Deterministic waterfall: sum of parts must equal total in minor units
+        waterfall_lines = self._fee_waterfall_lines(fees, intent.currency, reverse=False)
+        fee_minor = sum(line.amount_minor for line in waterfall_lines)
+        
         net_minor = amount_minor - fee_minor
         if net_minor < 0:
             raise PaymentsError("Fees exceed payment amount", code="FEES_EXCEED_AMOUNT")
@@ -278,7 +283,7 @@ class PaymentsEngine:
         lines: List[JournalLineInput] = [
             JournalLineInput("1001", Direction.DEBIT, net_minor, intent.currency),
         ]
-        lines.extend(self._fee_waterfall_lines(fees, intent.currency, reverse=False))
+        lines.extend(waterfall_lines)
         lines.append(JournalLineInput("4000", Direction.CREDIT, amount_minor, intent.currency))
 
         res: PostResponse = self.ledger.post(
@@ -309,7 +314,15 @@ class PaymentsEngine:
             "fees": fees.to_dict(),
         }
 
-    def refund(self, attempt_id: str, amount: Optional[str] = None) -> Dict[str, Any]:
+    def refund(
+        self, 
+        attempt_id: str, 
+        amount: Optional[str] = None, 
+        fee_policy: FeeRecoveryPolicy = FeeRecoveryPolicy.KEEP_ALL
+    ) -> Dict[str, Any]:
+        """
+        Processes a refund with an explicit fee recovery policy.
+        """
         if attempt_id not in self._attempts:
             raise AttemptNotFoundError(attempt_id)
         attempt = self._attempts[attempt_id]
@@ -318,9 +331,7 @@ class PaymentsEngine:
         refund_amount = Decimal(amount) if amount is not None else attempt.amount
         if refund_amount <= 0:
             raise PaymentsError("Refund amount must be positive", code="INVALID_AMOUNT")
-        if refund_amount > attempt.amount:
-            raise RefundExceedsAmountError(refund_amount, attempt.amount)
-
+        
         already_refunded = sum(
             (r.amount for r in self._refunds.values() if r.payment_attempt_id == attempt_id),
             Decimal("0"),
@@ -340,19 +351,31 @@ class PaymentsEngine:
         is_full = (already_refunded + refund_amount) == attempt.amount
         amount_minor = _to_minor(refund_amount)
 
-        if is_full and already_refunded == 0:
-            fee_minor = _to_minor(attempt.fee_breakdown.total_fee)
-            net_minor = _to_minor(attempt.amount) - fee_minor
-            lines = [
-                JournalLineInput("4000", Direction.DEBIT, _to_minor(attempt.amount), attempt.currency),
-                JournalLineInput("1001", Direction.CREDIT, net_minor, attempt.currency),
-            ]
-            lines.extend(self._fee_waterfall_lines(attempt.fee_breakdown, attempt.currency, reverse=True))
-        else:
-            lines = [
-                JournalLineInput("4000", Direction.DEBIT, amount_minor, attempt.currency),
-                JournalLineInput("1001", Direction.CREDIT, amount_minor, attempt.currency),
-            ]
+        # Calculate fee reversal based on policy
+        lines: List[JournalLineInput] = [
+            JournalLineInput("4000", Direction.DEBIT, amount_minor, attempt.currency),
+        ]
+
+        fee_to_reverse = FeeBreakdown()
+        if fee_policy == FeeRecoveryPolicy.REFUND_ALL and is_full:
+            fee_to_reverse = attempt.fee_breakdown
+        elif fee_policy == FeeRecoveryPolicy.REFUND_PROPORTIONAL:
+            ratio = refund_amount / attempt.amount
+            fee_to_reverse = FeeBreakdown(
+                interchange_fee=(attempt.fee_breakdown.interchange_fee * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+                processing_fee=(attempt.fee_breakdown.processing_fee * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+                network_fee=(attempt.fee_breakdown.network_fee * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+                platform_fee=(attempt.fee_breakdown.platform_fee * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+                fx_fee=(attempt.fee_breakdown.fx_fee * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+            )
+        
+        waterfall_reversal = self._fee_waterfall_lines(fee_to_reverse, attempt.currency, reverse=True)
+        fee_minor_reversed = sum(line.amount_minor for line in waterfall_reversal)
+        
+        # Net credit to cash is the refund amount minus any recovered fees
+        net_cash_minor = amount_minor - fee_minor_reversed
+        lines.append(JournalLineInput("1001", Direction.CREDIT, net_cash_minor, attempt.currency))
+        lines.extend(waterfall_reversal)
 
         res: PostResponse = self.ledger.post(
             PostRequest(
@@ -390,11 +413,22 @@ class PaymentsEngine:
         external_amount: str,
         external_currency: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """
+        Reconciles the internal payment record against an external settlement amount.
+        Compares against the NET amount (Gross - Fees) that should land in the Cash account.
+        """
         if attempt_id not in self._attempts:
             raise AttemptNotFoundError(attempt_id)
         attempt = self._attempts[attempt_id]
+        
+        # Calculate expected net amount from the capture
+        fee_minor = sum(_to_minor(getattr(attempt.fee_breakdown, f)) for f in [
+            "interchange_fee", "processing_fee", "network_fee", "platform_fee", "fx_fee"
+        ])
+        expected_net = attempt.amount - (Decimal(fee_minor) / 100)
+        
         ext_amt = Decimal(external_amount)
-        diff = attempt.amount - ext_amt
+        diff = expected_net - ext_amt
 
         if diff == 0:
             return {
@@ -407,21 +441,25 @@ class PaymentsEngine:
 
         diff_minor = abs(_to_minor(diff))
         if diff > 0:
+            # Short settlement: bank sent less than expected net
+            memo = f"Recon: Short settlement ({diff}) for {attempt_id} vs {external_ref}"
             lines = [
-                JournalLineInput("9999", Direction.DEBIT, diff_minor, attempt.currency),
-                JournalLineInput("1001", Direction.CREDIT, diff_minor, attempt.currency),
+                JournalLineInput("9999", Direction.DEBIT, diff_minor, attempt.currency, memo="Short settlement discrepancy"),
+                JournalLineInput("1001", Direction.CREDIT, diff_minor, attempt.currency, memo=f"Adj for {external_ref}"),
             ]
         else:
+            # Over settlement: bank sent more than expected net
+            memo = f"Recon: Over settlement ({abs(diff)}) for {attempt_id} vs {external_ref}"
             lines = [
-                JournalLineInput("1001", Direction.DEBIT, diff_minor, attempt.currency),
-                JournalLineInput("9999", Direction.CREDIT, diff_minor, attempt.currency),
+                JournalLineInput("1001", Direction.DEBIT, diff_minor, attempt.currency, memo=f"Adj for {external_ref}"),
+                JournalLineInput("9999", Direction.CREDIT, diff_minor, attempt.currency, memo="Over settlement discrepancy"),
             ]
 
         res: PostResponse = self.ledger.post(
             PostRequest(
                 organization_id=self.organization_id,
                 idempotency_key=f"recon_{attempt_id}_{external_ref}",
-                memo=f"Recon discrepancy {attempt_id} vs {external_ref}",
+                memo=memo,
                 lines=lines,
             )
         )
