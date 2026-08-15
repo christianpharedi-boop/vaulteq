@@ -59,6 +59,7 @@ class ClosePeriodRequest(BaseModel):
 # ── Payments ──────────────────────────────────────────────────────────────────
 
 class CreateIntentRequest(BaseModel):
+    organization_id: str
     amount: str
     currency: str = "USD"
     description: str = ""
@@ -67,22 +68,26 @@ class CreateIntentRequest(BaseModel):
 
 
 class AddPaymentMethodRequest(BaseModel):
+    organization_id: str
     customer_id: str
     method_type: str = "CARD"
     rail: str = "CARD"
 
 
 class AttachMethodRequest(BaseModel):
+    organization_id: str
     intent_id: str
     method_id: str
 
 
 class RefundRequest(BaseModel):
+    organization_id: str
     attempt_id: str
     amount: Optional[str] = None
 
 
 class ReconcileRequest(BaseModel):
+    organization_id: str
     attempt_id: str
     external_ref: str
     external_amount: str
@@ -91,6 +96,7 @@ class ReconcileRequest(BaseModel):
 # ── Identity ──────────────────────────────────────────────────────────────────
 
 class CreateCustomerRequest(BaseModel):
+    organization_id: str
     legal_name: str
     customer_type: str = "INDIVIDUAL"
     email: str = ""
@@ -100,11 +106,13 @@ class CreateCustomerRequest(BaseModel):
 
 
 class InitiateKycRequest(BaseModel):
+    organization_id: str
     customer_id: str
     level: str = "L1"
 
 
 class UploadDocumentRequest(BaseModel):
+    organization_id: str
     kyc_case_id: str
     document_type: str
     document_number: str
@@ -112,12 +120,14 @@ class UploadDocumentRequest(BaseModel):
 
 
 class VerifyKycRequest(BaseModel):
+    organization_id: str
     kyc_case_id: str
     status: str
     reason: str = ""
 
 
 class ScreenAmlRequest(BaseModel):
+    organization_id: str
     customer_id: str
 
 
