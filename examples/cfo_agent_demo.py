@@ -5,7 +5,7 @@ from decimal import Decimal
 from datetime import datetime
 
 # Ensure the monorepo is in the path
-sys.path.insert(0, "/home/ubuntu/vaulteq_v020/vaulteq_monorepo")
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from vaulteq.ledger import LedgerEngine, Direction, AccountType
 from vaulteq.payments import PaymentsEngine, PaymentMethodType, PaymentRail
